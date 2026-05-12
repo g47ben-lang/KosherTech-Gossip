@@ -18,142 +18,111 @@ class GossipService : Service() {
     private val CHAR_UUID = UUID.fromString("00002A37-0000-1000-8000-00805f9b34fb")
     private var bluetoothManager: BluetoothManager? = null
     private var gattServer: BluetoothGattServer? = null
-    private val seenMessages = mutableSetOf<Int>()
-    private var gossipPayload: String? = null
     
-    // מניעת חיבורים כפולים לאותו מכשיר
-    private val recentlyConnected = mutableSetOf<String>()
+    private val seenMessages = mutableSetOf<Int>()
+    private var currentPayload: String? = null
 
     override fun onCreate() {
         super.onCreate()
         bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        if (bluetoothManager?.adapter?.isEnabled == true) {
-            setupMesh()
-            sendLog("שירות הבלוטוס הופעל בהצלחה.")
-        } else {
-            sendLog("שגיאה: הבלוטוס כבוי!")
-        }
-    }
-
-    private fun sendLog(msg: String) {
-        sendBroadcast(Intent("RADAR_LOG").putExtra("LOG", msg))
+        if (bluetoothManager?.adapter?.isEnabled == true) setupMesh()
     }
 
     private fun setupMesh() {
         try {
+            // השרת שלי - מקבל הודעות מאחרים
             gattServer = bluetoothManager?.openGattServer(this, object : BluetoothGattServerCallback() {
-                override fun onCharacteristicWriteRequest(
-                    device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
-                    preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
-                ) {
-                    if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    val data = String(value, Charsets.UTF_8)
-                    sendLog("קיבלתי מידע ממכשיר: ${device.address}")
-                    handleIncoming(data)
+                override fun onCharacteristicWriteRequest(device: BluetoothDevice, reqId: Int, char: BluetoothGattCharacteristic, prep: Boolean, resp: Boolean, offset: Int, value: ByteArray) {
+                    if (resp) gattServer?.sendResponse(device, reqId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                    handleIncoming(String(value, Charsets.UTF_8))
                 }
             })
             val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
             service.addCharacteristic(BluetoothGattCharacteristic(CHAR_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, BluetoothGattCharacteristic.PERMISSION_WRITE))
             gattServer?.addService(service)
 
+            // מפרסם את עצמי כ"מכשיר עם האפליקציה"
             val adv = bluetoothManager?.adapter?.bluetoothLeAdvertiser
-            adv?.startAdvertising(AdvertiseSettings.Builder().setConnectable(true).build(), AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(), object : AdvertiseCallback() {
-                override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) { sendLog("מפרסם את עצמי ברשת...") }
-                override fun onStartFailure(errorCode: Int) { sendLog("שגיאת פרסום: $errorCode") }
-            })
+            adv?.startAdvertising(AdvertiseSettings.Builder().setConnectable(true).build(), AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(), object : AdvertiseCallback() {})
 
-            startScanning()
-
-        } catch (e: Exception) {
-            sendLog("קריסה בהפעלת הרשת: ${e.message}")
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
-    private fun startScanning() {
+    private fun startActiveScan() {
         val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-        scanner?.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), object : ScanCallback() {
+        // התיקון הקריטי: מחפש רק מכשירים שמשדרים את ה-UUID שלנו!
+        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+
+        scanner?.startScan(listOf(filter), settings, object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val payload = gossipPayload ?: return
                 val mac = result.device.address
-                
-                if (recentlyConnected.contains(mac)) return // כבר מנסה להתחבר אליו
-                recentlyConnected.add(mac)
-                
-                sendLog("זיהיתי מכשיר ($mac). מנסה לשלוח...")
-                
-                result.device.connectGatt(this@GossipService, false, object : BluetoothGattCallback() {
-                    override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                        if (newState == BluetoothProfile.STATE_CONNECTED) {
-                            sendLog("התחברתי ($mac). מבקש הגדלת חבילה...")
-                            gatt.requestMtu(512)
-                        } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                            recentlyConnected.remove(mac)
-                            gatt.close()
-                        }
-                    }
-                    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-                        if (status == BluetoothGatt.GATT_SUCCESS) gatt.discoverServices()
-                        else { gatt.disconnect(); gatt.close() }
-                    }
-                    override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                        val c = gatt.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
-                        if (c != null) {
-                            c.value = payload.toByteArray(Charsets.UTF_8)
-                            gatt.writeCharacteristic(c)
-                        } else {
-                            sendLog("המכשיר לא תומך ב-Gossip ($mac)")
-                            gatt.disconnect()
-                        }
-                    }
-                    override fun onCharacteristicWrite(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, s: Int) {
-                        if (s == BluetoothGatt.GATT_SUCCESS) sendLog("ההודעה הועברה בהצלחה למכשיר!")
-                        else sendLog("כשל בשליחה.")
-                        gatt.disconnect(); gatt.close()
-                        recentlyConnected.remove(mac)
-                    }
-                })
+                val name = result.device.name ?: "KosherDevice"
+                // מעדכן את הממשק שמצאנו מכשיר עם האפליקציה!
+                sendBroadcast(Intent("DEVICE_FOUND").putExtra("MAC", mac).putExtra("NAME", name))
             }
         })
-        sendLog("סורק מכשירים ברקע...")
+    }
+
+    private fun stopActiveScan() {
+        val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
+        scanner?.stopScan(object : ScanCallback() {})
+    }
+
+    private fun forceSendToDevice(mac: String, payload: String, msgId: String) {
+        val device = bluetoothManager?.adapter?.getRemoteDevice(mac)
+        device?.connectGatt(this, false, object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.requestMtu(512)
+                else { gatt.close(); broadcastStatus(msgId, "FAILED") }
+            }
+            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) gatt.discoverServices()
+            }
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                val char = gatt.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
+                if (char != null) {
+                    char.value = payload.toByteArray(Charsets.UTF_8)
+                    gatt.writeCharacteristic(char)
+                } else gatt.disconnect()
+            }
+            override fun onCharacteristicWrite(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) broadcastStatus(msgId, "SENT")
+                else broadcastStatus(msgId, "FAILED")
+                gatt.disconnect(); gatt.close()
+            }
+        })
+    }
+
+    private fun broadcastStatus(msgId: String, status: String) {
+        sendBroadcast(Intent("MSG_STATUS").putExtra("ID", msgId).putExtra("STATUS", status))
     }
 
     private fun handleIncoming(data: String) {
         val hash = data.hashCode()
         if (!seenMessages.contains(hash)) {
             seenMessages.add(hash)
-            gossipPayload = data
             val parts = data.split("|")
             if (parts.size >= 4) {
                 sendBroadcast(Intent("NEW_MSG").apply {
-                    putExtra("TYPE", parts[0])
                     putExtra("SENDER", parts[1])
                     putExtra("TARGET", parts[2])
                     putExtra("MSG", parts[3])
                 })
-                playNotify()
+                try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
             }
         }
     }
 
-    private fun playNotify() {
-        try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "SEND" -> {
-                val type = intent.getStringExtra("T") ?: "G"
-                val sender = intent.getStringExtra("S") ?: "אנונימי"
-                val target = intent.getStringExtra("R") ?: "ALL"
-                val msg = intent.getStringExtra("M") ?: ""
-                gossipPayload = "$type|$sender|$target|$msg"
-                seenMessages.add(gossipPayload.hashCode())
-                sendLog("הודעה חדשה נכנסה לתור ההפצה.")
-                recentlyConnected.clear() // מאפשר התחברות מחודשת לכולם
-            }
-            "FORCE_SCAN" -> {
-                recentlyConnected.clear()
-                sendLog("איפוס זיכרון חיבורים. מחפש שוב...")
+            "START_SCAN" -> startActiveScan()
+            "STOP_SCAN" -> stopActiveScan()
+            "FORCE_SEND" -> {
+                val mac = intent.getStringExtra("MAC") ?: return START_STICKY
+                val payload = intent.getStringExtra("PAYLOAD") ?: return START_STICKY
+                val msgId = intent.getStringExtra("MSG_ID") ?: return START_STICKY
+                forceSendToDevice(mac, payload, msgId)
             }
         }
         return START_STICKY
