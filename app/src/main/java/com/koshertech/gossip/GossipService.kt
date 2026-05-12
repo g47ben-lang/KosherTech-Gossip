@@ -22,8 +22,10 @@ class GossipService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        if (bluetoothManager?.adapter?.isEnabled == true) setupMesh()
+        try {
+            bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            if (bluetoothManager?.adapter?.isEnabled == true) setupMesh()
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     private fun setupMesh() {
@@ -44,40 +46,46 @@ class GossipService : Service() {
     }
 
     private fun startActiveScan() {
-        val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        try {
+            val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
+            val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
+            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
-        scanner?.startScan(listOf(filter), settings, object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                sendBroadcast(Intent("DEVICE_FOUND").putExtra("MAC", result.device.address))
-            }
-        })
+            scanner?.startScan(listOf(filter), settings, object : ScanCallback() {
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    sendBroadcast(Intent("DEVICE_FOUND").putExtra("MAC", result.device.address))
+                }
+            })
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     private fun forceSendToDevice(mac: String, payload: String, msgId: String) {
-        val device = bluetoothManager?.adapter?.getRemoteDevice(mac)
-        device?.connectGatt(this, false, object : BluetoothGattCallback() {
-            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.requestMtu(512)
-                else { gatt.close(); broadcastStatus(msgId, "FAILED") }
-            }
-            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-                if (status == BluetoothGatt.GATT_SUCCESS) gatt.discoverServices()
-            }
-            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                val char = gatt.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
-                if (char != null) {
-                    char.value = payload.toByteArray(Charsets.UTF_8)
-                    gatt.writeCharacteristic(char)
-                } else gatt.disconnect()
-            }
-            override fun onCharacteristicWrite(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
-                if (status == BluetoothGatt.GATT_SUCCESS) broadcastStatus(msgId, "SENT")
-                else broadcastStatus(msgId, "FAILED")
-                gatt.disconnect(); gatt.close()
-            }
-        })
+        try {
+            val device = bluetoothManager?.adapter?.getRemoteDevice(mac)
+            device?.connectGatt(this, false, object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) gatt.requestMtu(512)
+                    else { gatt.close(); broadcastStatus(msgId, "FAILED") }
+                }
+                override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) gatt.discoverServices()
+                }
+                override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                    val char = gatt.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
+                    if (char != null) {
+                        char.value = payload.toByteArray(Charsets.UTF_8)
+                        gatt.writeCharacteristic(char)
+                    } else gatt.disconnect()
+                }
+                override fun onCharacteristicWrite(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) broadcastStatus(msgId, "SENT")
+                    else broadcastStatus(msgId, "FAILED")
+                    gatt.disconnect(); gatt.close()
+                }
+            })
+        } catch (e: Exception) { 
+            broadcastStatus(msgId, "FAILED") 
+        }
     }
 
     private fun broadcastStatus(msgId: String, status: String) {
@@ -104,7 +112,7 @@ class GossipService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "START_SCAN" -> startActiveScan()
-            "STOP_SCAN" -> bluetoothManager?.adapter?.bluetoothLeScanner?.stopScan(object : ScanCallback() {})
+            "STOP_SCAN" -> try { bluetoothManager?.adapter?.bluetoothLeScanner?.stopScan(object : ScanCallback() {}) } catch (e: Exception) {}
             "FORCE_SEND" -> {
                 val mac = intent.getStringExtra("MAC") ?: return START_STICKY
                 val payload = intent.getStringExtra("PAYLOAD") ?: return START_STICKY
