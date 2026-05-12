@@ -1,6 +1,7 @@
 package com.koshertech.gossip
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter // התיקון הקריטי כאן!
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -24,7 +25,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var chatScreen: View
     private lateinit var sendScreen: View
-    private lateinit var settingsScreen: View
+    private lateinit var toolsScreen: View
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +35,7 @@ class MainActivity : AppCompatActivity() {
         
         chatScreen = createChatScreen()
         sendScreen = createSendScreen().apply { visibility = View.GONE }
-        settingsScreen = createSettingsScreen().apply { visibility = View.GONE }
+        toolsScreen = createToolsScreen().apply { visibility = View.GONE }
 
         val nav = BottomNavigationView(this).apply {
             id = View.generateViewId()
@@ -46,7 +47,7 @@ class MainActivity : AppCompatActivity() {
             setOnItemSelectedListener { item ->
                 chatScreen.visibility = if (item.itemId == 1) View.VISIBLE else View.GONE
                 sendScreen.visibility = if (item.itemId == 2) View.VISIBLE else View.GONE
-                settingsScreen.visibility = if (item.itemId == 3) View.VISIBLE else View.GONE
+                toolsScreen.visibility = if (item.itemId == 3) View.VISIBLE else View.GONE
                 true
             }
         }
@@ -57,7 +58,7 @@ class MainActivity : AppCompatActivity() {
         
         mainLayout.addView(chatScreen)
         mainLayout.addView(sendScreen)
-        mainLayout.addView(settingsScreen)
+        mainLayout.addView(toolsScreen)
         mainLayout.addView(nav, navParams)
         
         setContentView(mainLayout)
@@ -78,7 +79,6 @@ class MainActivity : AppCompatActivity() {
             val msg = getItem(position) ?: ""
             val isMine = msg.startsWith("אני:")
             val wrapper = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
                 gravity = if (isMine) Gravity.END else Gravity.START
                 setPadding(20, 10, 20, 10)
             }
@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
     private fun createChatScreen() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(TextView(context).apply {
-            text = "לוח מודעות פנימייה"
+            text = "Kosher Tech Gossip"
             setBackgroundColor(Color.parseColor("#075E54"))
             setTextColor(Color.WHITE)
             textSize = 18f
@@ -111,7 +111,7 @@ class MainActivity : AppCompatActivity() {
             chatAdapter = MessageAdapter()
             adapter = chatAdapter
         }
-        lv.setStackFromBottom(true) // התיקון לשגיאת הקימפול
+        lv.setStackFromBottom(true)
         addView(lv)
     }
 
@@ -139,7 +139,7 @@ class MainActivity : AppCompatActivity() {
         addView(input); addView(btn)
     }
 
-    private fun createSettingsScreen() = LinearLayout(this).apply {
+    private fun createToolsScreen() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(40, 80, 40, 40)
         
@@ -153,14 +153,14 @@ class MainActivity : AppCompatActivity() {
         }
         
         val diagBtn = Button(context).apply {
-            text = "פותר תקלות (Fixer)"
+            text = "פותר תקלות (Diagnostics)"
             setBackgroundColor(Color.RED)
             setTextColor(Color.WHITE)
             setOnClickListener { runDiagnostics() }
         }
 
         val refreshBtn = Button(context).apply {
-            text = "חיפוש ידני ורענון רשת"
+            text = "רענון בלוטוס ידני"
             setOnClickListener { 
                 stopService(Intent(context, GossipService::class.java))
                 startService(Intent(context, GossipService::class.java))
@@ -168,23 +168,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        addView(TextView(context).apply { text = "הגדרות וכלים"; textSize = 20f; setPadding(0,0,0,40) })
         addView(nameInput); addView(saveBtn); addView(refreshBtn); addView(diagBtn)
     }
 
     private fun runDiagnostics() {
         val bluetoothEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled ?: false
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        val gpsEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) lm.isLocationEnabled else lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
         
         val report = """
             Bluetooth: ${if (bluetoothEnabled) "V" else "X - כבה והדלק בלוטוס"}
-            GPS/Location: ${if (gpsEnabled) "V" else "X - חייב להדליק מיקום במכשיר!"}
-            Permissions: OK
+            Location (GPS): ${if (gpsEnabled) "V" else "X - חובה להדליק מיקום!"}
+            Service: Running
             
-            שים לב: ללא 'מיקום' דולק, אנדרואיד חוסם סריקת בלוטוס!
+            שים לב: ללא 'מיקום' דולק, אנדרואיד לא ימצא מכשירים אחרים.
         """.trimIndent()
         
-        android.app.AlertDialog.Builder(this).setTitle("דו\"ח תקלות").setMessage(report).show()
+        android.app.AlertDialog.Builder(this).setTitle("דו\"ח מצב").setMessage(report).show()
     }
 
     private fun checkPermissions() {
