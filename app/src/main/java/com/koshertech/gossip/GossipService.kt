@@ -6,9 +6,7 @@ import android.bluetooth.le.*
 import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.util.UUID
@@ -20,7 +18,7 @@ class GossipService : Service() {
     private var bluetoothManager: BluetoothManager? = null
     private var gattServer: BluetoothGattServer? = null
     private val seenMessages = mutableSetOf<Int>()
-    private var lastMessage: String? = null
+    private var messageToGossip: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,7 +36,7 @@ class GossipService : Service() {
             ) {
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
                 val incomingData = String(value, Charsets.UTF_8)
-                processIncomingMessage(incomingData)
+                processMessage(incomingData)
             }
         })
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
@@ -47,11 +45,11 @@ class GossipService : Service() {
         gattServer?.addService(service)
     }
 
-    private fun processIncomingMessage(data: String) {
+    private fun processMessage(data: String) {
         val hash = data.hashCode()
         if (!seenMessages.contains(hash)) {
             seenMessages.add(hash)
-            lastMessage = data // שמירה להפצה הלאה
+            messageToGossip = data // שומר להפצה הלאה
             playNotificationSound()
             sendBroadcast(Intent("NEW_MSG").apply { putExtra("DATA", data) })
         }
@@ -59,8 +57,8 @@ class GossipService : Service() {
 
     private fun playNotificationSound() {
         try {
-            val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            RingtoneManager.getRingtone(this, notification).play()
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            RingtoneManager.getRingtone(this, uri).play()
         } catch (e: Exception) {}
     }
 
@@ -76,8 +74,8 @@ class GossipService : Service() {
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner?.startScan(null, settings, object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val messageToSend = lastMessage ?: return
-                // התחברות למכשיר שנמצא כדי לדחוף לו את ההודעה
+                val gossipText = messageToGossip ?: return
+                // התחברות אוטומטית להעברת המידע
                 result.device.connectGatt(this@GossipService, false, object : BluetoothGattCallback() {
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                         if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
@@ -86,13 +84,12 @@ class GossipService : Service() {
                         val srv = gatt.getService(SERVICE_UUID)
                         val char = srv?.getCharacteristic(CHAR_UUID)
                         if (char != null) {
-                            char.value = messageToSend.toByteArray(Charsets.UTF_8)
+                            char.value = gossipText.toByteArray(Charsets.UTF_8)
                             gatt.writeCharacteristic(char)
                         }
                     }
                     override fun onCharacteristicWrite(gatt: BluetoothGatt, c: BluetoothGattCharacteristic, s: Int) {
-                        gatt.disconnect()
-                        gatt.close()
+                        gatt.disconnect(); gatt.close()
                     }
                 })
             }
@@ -103,8 +100,8 @@ class GossipService : Service() {
         if (intent?.action == "SEND_MESSAGE") {
             val user = intent.getStringExtra("USER_NAME") ?: "אנונימי"
             val text = intent.getStringExtra("MESSAGE_TEXT") ?: ""
-            lastMessage = "$user: $text"
-            seenMessages.add(lastMessage.hashCode())
+            messageToGossip = "$user: $text"
+            seenMessages.add(messageToGossip.hashCode())
         }
         return START_STICKY
     }
