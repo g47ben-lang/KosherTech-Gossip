@@ -26,41 +26,38 @@ class GossipService : Service() {
     }
 
     private fun setupMesh() {
-        // שרת לקבלת הודעות
         gattServer = bluetoothManager?.openGattServer(this, object : BluetoothGattServerCallback() {
             override fun onCharacteristicWriteRequest(
                 device: BluetoothDevice, requestId: Int, characteristic: BluetoothGattCharacteristic,
                 preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray
             ) {
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                val text = String(value, Charsets.UTF_8)
-                handleIncoming(text)
+                handleIncoming(String(value, Charsets.UTF_8))
             }
         })
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         service.addCharacteristic(BluetoothGattCharacteristic(CHAR_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, BluetoothGattCharacteristic.PERMISSION_WRITE))
         gattServer?.addService(service)
 
-        // שידור עצמי (Advertising)
+        // Advertising & Scanning
         val adv = bluetoothManager?.adapter?.bluetoothLeAdvertiser
-        val settings = AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY).setConnectable(true).build()
-        val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build()
-        adv?.startAdvertising(settings, data, object : AdvertiseCallback() {})
+        adv?.startAdvertising(AdvertiseSettings.Builder().setConnectable(true).build(), AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(), object : AdvertiseCallback() {})
 
-        // סריקה מתמדת להפצה (Scanning)
         val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-        val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner?.startScan(null, scanSettings, object : ScanCallback() {
+        scanner?.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val payload = gossipPayload ?: return
-                // דחיפה אקטיבית למכשיר שנמצא
                 result.device.connectGatt(this@GossipService, false, object : BluetoothGattCallback() {
                     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                        if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+                        if (newState == BluetoothProfile.STATE_CONNECTED) {
+                            gatt.requestMtu(512) // מבקש חבילה גדולה כדי למנוע פיצול הודעה
+                        }
+                    }
+                    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                        gatt.discoverServices()
                     }
                     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                        val s = gatt.getService(SERVICE_UUID)
-                        val c = s?.getCharacteristic(CHAR_UUID)
+                        val c = gatt.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
                         if (c != null) {
                             c.value = payload.toByteArray(Charsets.UTF_8)
                             gatt.writeCharacteristic(c)
@@ -79,8 +76,19 @@ class GossipService : Service() {
         if (!seenMessages.contains(hash)) {
             seenMessages.add(hash)
             gossipPayload = data
-            playNotify()
-            sendBroadcast(Intent("NEW_MSG").apply { putExtra("DATA", data) })
+            
+            // פרוטוקול: [TYPE]|[SENDER]|[TARGET]|[MSG]
+            val parts = data.split("|")
+            if (parts.size >= 4) {
+                val intent = Intent("NEW_MSG").apply {
+                    putExtra("TYPE", parts[0])
+                    putExtra("SENDER", parts[1])
+                    putExtra("TARGET", parts[2])
+                    putExtra("MSG", parts[3])
+                }
+                sendBroadcast(intent)
+                playNotify()
+            }
         }
     }
 
@@ -93,9 +101,11 @@ class GossipService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "SEND") {
-            val user = intent.getStringExtra("U") ?: "אנונימי"
-            val text = intent.getStringExtra("M") ?: ""
-            gossipPayload = "$user: $text"
+            val type = intent.getStringExtra("T") ?: "G"
+            val sender = intent.getStringExtra("S") ?: "אנונימי"
+            val target = intent.getStringExtra("R") ?: "ALL"
+            val msg = intent.getStringExtra("M") ?: ""
+            gossipPayload = "$type|$sender|$target|$msg"
             seenMessages.add(gossipPayload.hashCode())
         }
         return START_STICKY
