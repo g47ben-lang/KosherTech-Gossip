@@ -3,7 +3,6 @@ package com.koshertech.gossip
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.*
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -14,174 +13,118 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
     private val messages = mutableListOf<String>()
-    private lateinit var chatAdapter: MessageAdapter
-    private lateinit var prefs: SharedPreferences
+    private lateinit var adapter: MessageAdapter
     private lateinit var chatScreen: View
     private lateinit var sendScreen: View
-    private lateinit var toolsScreen: View
+    private lateinit var settingsScreen: View
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("KosherGossip", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
 
-        val mainLayout = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
+        // רקע וואטסאפ קלאסי
+        val main = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
         
-        chatScreen = createChatScreen()
-        sendScreen = createSendScreen().apply { visibility = View.GONE }
-        toolsScreen = createToolsScreen().apply { visibility = View.GONE }
+        chatScreen = createChat()
+        sendScreen = createSend(prefs).apply { visibility = View.GONE }
+        settingsScreen = createSettings(prefs).apply { visibility = View.GONE }
 
         val nav = BottomNavigationView(this).apply {
             id = View.generateViewId()
             setBackgroundColor(Color.WHITE)
             menu.add(0, 1, 0, "לוח").setIcon(android.R.drawable.ic_dialog_email)
             menu.add(0, 2, 1, "שלח").setIcon(android.R.drawable.ic_menu_send)
-            menu.add(0, 3, 2, "כלים").setIcon(android.R.drawable.ic_menu_manage)
-            
-            setOnItemSelectedListener { item ->
-                chatScreen.visibility = if (item.itemId == 1) View.VISIBLE else View.GONE
-                sendScreen.visibility = if (item.itemId == 2) View.VISIBLE else View.GONE
-                toolsScreen.visibility = if (item.itemId == 3) View.VISIBLE else View.GONE
+            menu.add(0, 3, 2, "הגדרות").setIcon(android.R.drawable.ic_menu_manage)
+            setOnItemSelectedListener {
+                chatScreen.visibility = if (it.itemId == 1) View.VISIBLE else View.GONE
+                sendScreen.visibility = if (it.itemId == 2) View.VISIBLE else View.GONE
+                settingsScreen.visibility = if (it.itemId == 3) View.VISIBLE else View.GONE
                 true
             }
         }
 
-        val navParams = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 180).apply {
-            addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
-        }
-        
-        mainLayout.addView(chatScreen)
-        mainLayout.addView(sendScreen)
-        mainLayout.addView(toolsScreen)
-        mainLayout.addView(nav, navParams)
-        
-        setContentView(mainLayout)
-        checkPermissions()
-        
+        val lp = RelativeLayout.LayoutParams(-1, 180).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
+        main.addView(chatScreen); main.addView(sendScreen); main.addView(settingsScreen); main.addView(nav, lp)
+        setContentView(main)
+
+        // בקשת הרשאות - אבל לא עוצרים אם אין GPS
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.ACCESS_FINE_LOCATION), 1)
+        startService(Intent(this, GossipService::class.java))
+
         registerReceiver(object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                intent?.getStringExtra("DATA")?.let { 
-                    messages.add(it)
-                    chatAdapter.notifyDataSetChanged()
-                }
+            override fun onReceive(c: Context?, i: Intent?) {
+                i?.getStringExtra("DATA")?.let { messages.add(it); adapter.notifyDataSetChanged() }
             }
         }, IntentFilter("NEW_MSG"))
     }
 
     inner class MessageAdapter : ArrayAdapter<String>(this, 0, messages) {
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val msg = getItem(position) ?: ""
-            val isMine = msg.startsWith("אני:")
-            val wrapper = LinearLayout(context).apply {
-                gravity = if (isMine) Gravity.END else Gravity.START
+        override fun getView(p: Int, v: View?, parent: ViewGroup): View {
+            val m = getItem(p) ?: ""
+            val mine = m.startsWith("אני:")
+            return LinearLayout(context).apply {
+                gravity = if (mine) Gravity.END else Gravity.START
                 setPadding(20, 10, 20, 10)
+                addView(TextView(context).apply {
+                    text = m
+                    setPadding(30, 20, 30, 20)
+                    background = GradientDrawable().apply {
+                        setColor(if (mine) Color.parseColor("#DCF8C6") else Color.WHITE)
+                        cornerRadius = 20f
+                    }
+                })
             }
-            val bubble = TextView(context).apply {
-                text = msg
-                setPadding(30, 20, 30, 20)
-                background = GradientDrawable().apply {
-                    setColor(if (isMine) Color.parseColor("#DCF8C6") else Color.WHITE)
-                    cornerRadius = 25f
-                }
-                maxWidth = 700
-            }
-            wrapper.addView(bubble)
-            return wrapper
         }
     }
 
-    private fun createChatScreen() = LinearLayout(this).apply {
+    private fun createChat() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(TextView(context).apply {
-            text = "Kosher Tech Gossip"
-            setBackgroundColor(Color.parseColor("#075E54"))
-            setTextColor(Color.WHITE)
-            textSize = 18f
-            setPadding(30, 30, 30, 30)
-            gravity = Gravity.CENTER
+            text = "Kosher Tech - לוח מודעות"; gravity = Gravity.CENTER
+            setPadding(0, 40, 0, 40); setBackgroundColor(Color.parseColor("#075E54"))
+            setTextColor(Color.WHITE); textSize = 18f
         })
-        val lv = ListView(context).apply {
-            divider = null
-            chatAdapter = MessageAdapter()
-            adapter = chatAdapter
-        }
-        lv.setStackFromBottom(true)
-        addView(lv)
+        addView(ListView(context).apply { 
+            divider = null; adapter = MessageAdapter().also { this@MainActivity.adapter = it }
+            setStackFromBottom(true)
+        })
     }
 
-    private fun createSendScreen() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(40, 80, 40, 40)
-        val input = EditText(context).apply { hint = "הודעה חדשה..." }
-        val btn = Button(context).apply {
-            text = "שדר לרשת"
+    private fun createSend(p: SharedPreferences) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(50, 100, 50, 50)
+        val inp = EditText(context).apply { hint = "הודעה..." }
+        addView(inp)
+        addView(Button(context).apply {
+            text = "שלח לרשת"
             setOnClickListener {
-                val user = prefs.getString("username", "אנונימי")
-                val text = input.text.toString()
-                if (text.isNotBlank()) {
-                    messages.add("אני: $text")
-                    chatAdapter.notifyDataSetChanged()
+                val u = p.getString("u", "אנונימי"); val t = inp.text.toString()
+                if (t.isNotBlank()) {
+                    messages.add("אני: $t"); adapter.notifyDataSetChanged()
                     startService(Intent(context, GossipService::class.java).apply {
-                        action = "SEND_MESSAGE"
-                        putExtra("USER_NAME", user)
-                        putExtra("MESSAGE_TEXT", text)
+                        action = "SEND"; putExtra("U", u); putExtra("M", t)
                     })
-                    input.text.clear()
+                    inp.text.clear()
                 }
             }
-        }
-        addView(input); addView(btn)
+        })
     }
 
-    private fun createToolsScreen() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(40, 80, 40, 40)
-        
-        val nameInput = EditText(context).apply { 
-            hint = "השם שלך"
-            setText(prefs.getString("username", ""))
-        }
-        val saveBtn = Button(context).apply {
-            text = "שמור שם"
-            setOnClickListener { prefs.edit().putString("username", nameInput.text.toString()).apply() }
-        }
-        
-        val diagBtn = Button(context).apply {
-            text = "בדיקת מצב בלוטוס"
-            setBackgroundColor(Color.BLUE)
-            setTextColor(Color.WHITE)
-            setOnClickListener { 
-                val btEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled ?: false
-                Toast.makeText(context, if(btEnabled) "בלוטוס פעיל ותקין" else "נא להפעיל בלוטוס!", Toast.LENGTH_LONG).show()
-            }
-        }
-
-        val refreshBtn = Button(context).apply {
-            text = "אתחול רשת Gossip"
-            setOnClickListener { 
-                stopService(Intent(context, GossipService::class.java))
-                startService(Intent(context, GossipService::class.java))
-                Toast.makeText(context, "הרשת אותחלה", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        addView(TextView(context).apply { text = "ניהול רשת (ללא GPS)"; textSize = 20f; setPadding(0,0,0,40) })
-        addView(nameInput); addView(saveBtn); addView(refreshBtn); addView(diagBtn)
-    }
-
-    private fun checkPermissions() {
-        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN)
-        }
-        if (perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
-            ActivityCompat.requestPermissions(this, perms, 1)
-        }
+    private fun createSettings(p: SharedPreferences) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; setPadding(50, 100, 50, 50)
+        val n = EditText(context).apply { hint = "השם שלך"; setText(p.getString("u", "")) }
+        addView(n)
+        addView(Button(context).apply {
+            text = "שמור"
+            setOnClickListener { p.edit().putString("u", n.text.toString()).apply() }
+        })
+        addView(TextView(context).apply { 
+            text = "\nסטטוס חומרה:\nBluetooth: ${BluetoothAdapter.getDefaultAdapter()?.isEnabled}\nGPS: לא זוהה (עקיפה פעילה)"
+            setPadding(0, 50, 0, 0)
+        })
     }
 }
