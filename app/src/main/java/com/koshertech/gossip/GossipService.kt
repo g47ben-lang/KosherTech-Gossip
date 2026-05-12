@@ -104,7 +104,12 @@ class GossipService : Service() {
                     putExtra("TARGET", parts[3])
                     putExtra("MSG", parts[4])
                 })
-                try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
+                
+                // בדיקת הגדרות צליל
+                val prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
+                if (prefs.getBoolean("sound_enabled", true)) {
+                    try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
+                }
             }
         }
     }
