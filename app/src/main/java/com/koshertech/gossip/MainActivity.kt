@@ -1,112 +1,175 @@
 package com.koshertech.gossip
 
 import android.Manifest
-import android.content.Intent
+import android.content.*
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.widget.ArrayAdapter
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ListView
-import android.widget.LinearLayout
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
-    private val messagesList = mutableListOf<String>()
-    private lateinit var adapter: ArrayAdapter<String> // התיקון כאן: var במקום val
+    private val messages = mutableListOf<String>()
+    private lateinit var chatAdapter: ArrayAdapter<String>
+    private lateinit var prefs: SharedPreferences
+    
+    // מיכלים למסכים
+    private lateinit var chatScreen: LinearLayout
+    private lateinit var sendScreen: LinearLayout
+    private lateinit var settingsScreen: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // בדיקת תאימות לאנדרואיד 4 (Lollipop הוא API 21)
+        prefs = getSharedPreferences("KosherGossip", Context.MODE_PRIVATE)
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("Kosher Tech")
-                .setMessage("המכשיר שלך מריץ גרסת אנדרואיד ישנה (אנדרואיד 4). טכנולוגיית הרשת דורשת אנדרואיד 5 ומעלה. לצערי, לא תוכל לשלוח או לקבל הודעות.")
-                .setPositiveButton("הבנתי") { _, _ -> finish() }
-                .setCancelable(false)
-                .show()
-            return 
+            showOldDeviceDialog()
+            return
         }
 
-        // יצירת ממשק בסיסי
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-        }
+        val mainLayout = RelativeLayout(this)
+        
+        // 1. מסך צ'אט (לוח מודעות)
+        chatScreen = createChatScreen()
+        
+        // 2. מסך שליחה
+        sendScreen = createSendScreen()
+        sendScreen.visibility = View.GONE
 
-        val inputField = EditText(this).apply {
-            hint = "הקלד הודעה קצרה (עד 140 תווים)..."
-            filters = arrayOf(android.text.InputFilter.LengthFilter(140))
-        }
+        // 3. מסך הגדרות
+        settingsScreen = createSettingsScreen()
+        settingsScreen.visibility = View.GONE
 
-        val sendButton = Button(this).apply {
-            text = "שדר לכולם"
-            setOnClickListener {
-                val text = inputField.text.toString()
-                if (text.isNotBlank()) {
-                    sendMessageToService(text)
-                    inputField.text.clear()
-                }
+        // תפריט תחתון
+        val nav = BottomNavigationView(this).apply {
+            id = View.generateViewId()
+            setBackgroundColor(Color.WHITE)
+            menu.add(0, 1, 0, "לוח").setIcon(android.R.drawable.ic_dialog_email)
+            menu.add(0, 2, 1, "שלח").setIcon(android.R.drawable.ic_menu_send)
+            menu.add(0, 3, 2, "הגדרות").setIcon(android.R.drawable.ic_menu_manage)
+            
+            setOnItemSelectedListener { item ->
+                chatScreen.visibility = if (item.itemId == 1) View.VISIBLE else View.GONE
+                sendScreen.visibility = if (item.itemId == 2) View.VISIBLE else View.GONE
+                settingsScreen.visibility = if (item.itemId == 3) View.VISIBLE else View.GONE
+                true
             }
         }
 
-        val listView = ListView(this)
-        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, messagesList)
-        listView.adapter = adapter
-
-        layout.addView(inputField)
-        layout.addView(sendButton)
-        layout.addView(listView)
-        setContentView(layout)
-
-        checkPermissionsAndStartService()
-    }
-
-    private fun checkPermissionsAndStartService() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
-        } else {
-            arrayOf(
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
+        val navParams = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
         }
-
-        val allGranted = permissions.all { 
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED 
-        }
-
-        if (allGranted) {
-            startGossipService()
-        } else {
-            ActivityCompat.requestPermissions(this, permissions, 1)
-        }
-    }
-
-    private fun startGossipService() {
-        val intent = Intent(this, GossipService::class.java)
-        startService(intent)
-    }
-
-    private fun sendMessageToService(text: String) {
-        messagesList.add(0, "אני: $text") // מוסיף להתחלה כדי שיראו מיד
-        adapter.notifyDataSetChanged()
         
-        val intent = Intent(this, GossipService::class.java).apply {
-            action = "SEND_MESSAGE"
-            putExtra("MESSAGE_TEXT", text)
+        mainLayout.addView(chatScreen)
+        mainLayout.addView(sendScreen)
+        mainLayout.addView(settingsScreen)
+        mainLayout.addView(nav, navParams)
+        
+        setContentView(mainLayout)
+        checkPermissions()
+        
+        // האזנה להודעות חדשות מהרשת
+        registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                intent?.getStringExtra("DATA")?.let { 
+                    messages.add(0, it)
+                    chatAdapter.notifyDataSetChanged()
+                }
+            }
+        }, IntentFilter("NEW_MSG"))
+    }
+
+    private fun createChatScreen() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(Color.parseColor("#F0F0F0"))
+        val title = TextView(context).apply {
+            text = "לוח מודעות ישיבתי"
+            textSize = 20f
+            setPadding(40, 40, 40, 40)
+            gravity = Gravity.CENTER
         }
-        startService(intent)
+        val listView = ListView(context).apply {
+            divider = null
+            chatAdapter = ArrayAdapter(context, android.R.layout.simple_list_item_1, messages)
+            adapter = chatAdapter
+        }
+        addView(title)
+        addView(listView)
+    }
+
+    private fun createSendScreen() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(50, 100, 50, 50)
+        gravity = Gravity.CENTER_HORIZONTAL
+
+        val msgInput = EditText(context).apply { hint = "מה על הלב שלך?" }
+        val sendBtn = Button(context).apply {
+            text = "שלח לרשת"
+            setOnClickListener {
+                val name = prefs.getString("username", "אנונימי")
+                val text = msgInput.text.toString()
+                if (text.isNotBlank()) {
+                    val intent = Intent(context, GossipService::class.java).apply {
+                        action = "SEND_MESSAGE"
+                        putExtra("USER_NAME", name)
+                        putExtra("MESSAGE_TEXT", text)
+                    }
+                    context.startService(intent)
+                    msgInput.text.clear()
+                    Toast.makeText(context, "נשלח להפצה!", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        addView(TextView(context).apply { text = "כתיבת הודעה חדשה"; textSize = 18f })
+        addView(msgInput)
+        addView(sendBtn)
+    }
+
+    private fun createSettingsScreen() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(50, 100, 50, 50)
+        
+        val nameInput = EditText(context).apply { 
+            hint = "הכנס שם שיופיע בשליחה"
+            setText(prefs.getString("username", ""))
+        }
+        val saveBtn = Button(context).apply {
+            text = "שמור הגדרות"
+            setOnClickListener {
+                prefs.edit().putString("username", nameInput.text.toString()).apply()
+                Toast.makeText(context, "הגדרות נשמרו!", Toast.LENGTH_SHORT).show()
+            }
+        }
+        addView(TextView(context).apply { text = "הגדרות פרופיל"; textSize = 18f })
+        addView(nameInput)
+        addView(saveBtn)
+    }
+
+    private fun checkPermissions() {
+        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
+            ActivityCompat.requestPermissions(this, perms, 1)
+        } else {
+            startService(Intent(this, GossipService::class.java))
+        }
+    }
+
+    private fun showOldDeviceDialog() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Kosher Tech")
+            .setMessage("אנדרואיד 4 לא נתמך ברשת ה-Gossip.")
+            .setPositiveButton("סגור") { _, _ -> finish() }.show()
     }
 }
