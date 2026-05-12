@@ -5,6 +5,7 @@ import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.Intent
+import android.media.RingtoneManager
 import android.os.IBinder
 import android.os.ParcelUuid
 import android.util.Log
@@ -14,9 +15,11 @@ class GossipService : Service() {
 
     private val SERVICE_UUID = UUID.fromString("0000180D-0000-1000-8000-00805f9b34fb")
     private val CHAR_UUID = UUID.fromString("00002A37-0000-1000-8000-00805f9b34fb")
-    
     private var bluetoothManager: BluetoothManager? = null
     private var gattServer: BluetoothGattServer? = null
+
+    // סט לשמירת מזהי הודעות כדי למנוע צלצולים כפולים על אותה הודעה
+    private val seenMessages = mutableSetOf<Int>()
 
     override fun onCreate() {
         super.onCreate()
@@ -26,15 +29,14 @@ class GossipService : Service() {
         startScanning()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "SEND_MESSAGE") {
-            val user = intent.getStringExtra("USER_NAME") ?: "אנונימי"
-            val text = intent.getStringExtra("MESSAGE_TEXT") ?: ""
-            val fullPayload = "$user: $text"
-            // פה תתבצע ההפצה ברשת (Gossip logic)
-            Log.d("Gossip", "Broadcasting: $fullPayload")
+    private fun playNotificationSound() {
+        try {
+            val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val r = RingtoneManager.getRingtone(applicationContext, notification)
+            r.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        return START_STICKY
     }
 
     private fun startServer() {
@@ -46,9 +48,15 @@ class GossipService : Service() {
                 if (responseNeeded) gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
                 
                 val incomingData = String(value, Charsets.UTF_8)
-                // שליחת ההודעה חזרה לאפליקציה להצגה בלוח
-                val intent = Intent("NEW_MSG").apply { putExtra("DATA", incomingData) }
-                sendBroadcast(intent)
+                val msgHash = incomingData.hashCode()
+
+                if (!seenMessages.contains(msgHash)) {
+                    seenMessages.add(msgHash)
+                    playNotificationSound() // צליל הודעה נכנסת!
+                    
+                    val intent = Intent("NEW_MSG").apply { putExtra("DATA", incomingData) }
+                    sendBroadcast(intent)
+                }
             }
         })
         val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
@@ -69,9 +77,20 @@ class GossipService : Service() {
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner?.startScan(null, settings, object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                // כאן תתבצע ההתחברות והעברת המידע (Mesh logic)
+                // לוגיקת Mesh להעברה הלאה תבוא כאן
             }
         })
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "SEND_MESSAGE") {
+            val user = intent.getStringExtra("USER_NAME") ?: "אנונימי"
+            val text = intent.getStringExtra("MESSAGE_TEXT") ?: ""
+            val fullPayload = "$user: $text"
+            seenMessages.add(fullPayload.hashCode()) // אל תצליל על הודעה שאני שלחתי
+            Log.d("Gossip", "Broadcasting: $fullPayload")
+        }
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
