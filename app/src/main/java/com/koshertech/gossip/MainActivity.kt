@@ -39,7 +39,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
-        myName = prefs.getString("u", "User_${(10..99).random()}")!!
+        myName = prefs.getString("u", "User_${(10..99).random()}") ?: "User"
         myMac = android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.address ?: "UNKNOWN"
 
         val main = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
@@ -78,7 +78,7 @@ class MainActivity : AppCompatActivity() {
         if (g.isNotEmpty() && g[0] == PackageManager.PERMISSION_GRANTED) startService(Intent(this, GossipService::class.java))
     }
 
-    private fun getAlias(mac: String, defaultName: String) = prefs.getString("alias_$mac", defaultName) ?: defaultName
+    private fun getAlias(mac: String, defaultName: String): String = prefs.getString("alias_$mac", defaultName) ?: defaultName
 
     private fun registerReceivers() {
         registerReceiver(object : BroadcastReceiver() {
@@ -126,11 +126,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     inner class MessageAdapter(private val filterType: String) : ArrayAdapter<ChatMsg>(this, 0, allMessages) {
-        override fun getCount() = allMessages.count { it.type == filterType || (filterType == "OUTBOX" && it.isMine) }
-        override fun getItem(p: Int) = allMessages.filter { it.type == filterType || (filterType == "OUTBOX" && it.isMine) }[p]
+        override fun getCount(): Int = allMessages.count { it.type == filterType || (filterType == "OUTBOX" && it.isMine) }
+        override fun getItem(p: Int): ChatMsg = allMessages.filter { it.type == filterType || (filterType == "OUTBOX" && it.isMine) }[p]
 
         override fun getView(p: Int, v: View?, parent: ViewGroup): View {
-            val msg = getItem(p)!!
+            val msg = getItem(p)
             return LinearLayout(context).apply {
                 gravity = if (msg.isMine) Gravity.END else Gravity.START
                 setPadding(20, 10, 20, 10)
@@ -151,7 +151,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 addView(bubble)
                 
-                // התיקון: לחיצה רגילה מפעילה מיד את תפריט החיבור הידני
                 setOnClickListener { if (msg.isMine) showForceSendDialog(msg) }
             }
         }
@@ -174,7 +173,7 @@ class MainActivity : AppCompatActivity() {
         }.show()
     }
 
-    private fun createChatScreen(type: String) = LinearLayout(this).apply {
+    private fun createChatScreen(type: String): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         
         val lv = ListView(context).apply { 
@@ -188,8 +187,9 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; setPadding(20,20,20,20); setBackgroundColor(Color.WHITE)
             gravity = Gravity.CENTER_VERTICAL
             
-            val targetInp = if (type == "P") EditText(context).apply { hint = "נמען"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.4f) } else null
-            val msgInp = EditText(context).apply { 
+            // הוספת Type מפורש (EditText?) כדי לפתור את שגיאת הקומפילציה
+            val targetInp: EditText? = if (type == "P") EditText(context).apply { hint = "נמען"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.4f) } else null
+            val msgInp: EditText = EditText(context).apply { 
                 hint = "כתוב..."; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                 background = GradientDrawable().apply { setStroke(1, Color.LTGRAY); cornerRadius = 40f; setColor(Color.parseColor("#F5F5F5")) }
                 setPadding(40, 30, 40, 30)
@@ -206,7 +206,7 @@ class MainActivity : AppCompatActivity() {
                     if (m.isNotBlank()) {
                         val msg = ChatMsg(UUID.randomUUID().toString(), myMac, myName, target, m, "PENDING", true, type)
                         allMessages.add(msg); updateLists(); msgInp.text.clear()
-                        showForceSendDialog(msg) // מקפיץ מיד את תפריט הבחירה כפי שביקשת!
+                        showForceSendDialog(msg)
                     }
                 }
             }
@@ -216,7 +216,7 @@ class MainActivity : AppCompatActivity() {
         addView(lv); addView(inputArea)
     }
 
-    private fun createOutboxScreen() = LinearLayout(this).apply {
+    private fun createOutboxScreen(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(TextView(context).apply {
             text = "תיבת יוצאים - לחץ על הודעה כדי לשדר שוב"; gravity = Gravity.CENTER
@@ -228,14 +228,14 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun createSettingsAndRadar() = ScrollView(this).apply {
+    private fun createSettingsAndRadar(): ScrollView = ScrollView(this).apply {
         val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(50, 50, 50, 50) }
         
-        container.addView(TextView(context).apply { text = "הגדרות פרופיל"; textSize = 18f; setTextColor(Color.parseColor("#075E54")) })
+        container.addView(TextView(context).apply { text = "הגדרות - Kosher Tech"; textSize = 18f; setTextColor(Color.parseColor("#075E54")) })
         val nameInp = EditText(context).apply { setText(myName) }
         container.addView(nameInp)
         container.addView(Button(context).apply {
-            text = "שמור שם"; setBackgroundColor(Color.LTGRAY)
+            text = "שמור שם ציבורי"; setBackgroundColor(Color.LTGRAY)
             setOnClickListener { myName = nameInp.text.toString(); prefs.edit().putString("u", myName).apply(); Toast.makeText(context, "שם עודכן", Toast.LENGTH_SHORT).show() }
         })
 
