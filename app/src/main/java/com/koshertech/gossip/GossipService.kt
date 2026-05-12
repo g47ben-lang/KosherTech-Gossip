@@ -20,7 +20,8 @@ class GossipService : Service() {
     private var gattServer: BluetoothGattServer? = null
     
     private val seenMessages = mutableSetOf<Int>()
-    private var currentPayload: String? = null
+    private val autoPushQueue = mutableMapOf<String, String>() // msgId -> payload
+    private var isScanningForPush = false
 
     override fun onCreate() {
         super.onCreate()
@@ -30,51 +31,55 @@ class GossipService : Service() {
 
     private fun setupMesh() {
         try {
-            // השרת שלי - מקבל הודעות מאחרים
             gattServer = bluetoothManager?.openGattServer(this, object : BluetoothGattServerCallback() {
                 override fun onCharacteristicWriteRequest(device: BluetoothDevice, reqId: Int, char: BluetoothGattCharacteristic, prep: Boolean, resp: Boolean, offset: Int, value: ByteArray) {
                     if (resp) gattServer?.sendResponse(device, reqId, BluetoothGatt.GATT_SUCCESS, offset, value)
-                    handleIncoming(String(value, Charsets.UTF_8))
+                    handleIncoming(String(value, Charsets.UTF_8), device.address)
                 }
             })
             val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
             service.addCharacteristic(BluetoothGattCharacteristic(CHAR_UUID, BluetoothGattCharacteristic.PROPERTY_WRITE, BluetoothGattCharacteristic.PERMISSION_WRITE))
             gattServer?.addService(service)
 
-            // מפרסם את עצמי כ"מכשיר עם האפליקציה"
             val adv = bluetoothManager?.adapter?.bluetoothLeAdvertiser
             adv?.startAdvertising(AdvertiseSettings.Builder().setConnectable(true).build(), AdvertiseData.Builder().addServiceUuid(ParcelUuid(SERVICE_UUID)).build(), object : AdvertiseCallback() {})
+            
+            // מתחיל סריקה אוטומטית ברקע
+            startActiveScan()
 
         } catch (e: Exception) { e.printStackTrace() }
     }
 
     private fun startActiveScan() {
+        if (isScanningForPush) return
+        isScanningForPush = true
         val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-        // התיקון הקריטי: מחפש רק מכשירים שמשדרים את ה-UUID שלנו!
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
         scanner?.startScan(listOf(filter), settings, object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val mac = result.device.address
-                val name = result.device.name ?: "KosherDevice"
-                // מעדכן את הממשק שמצאנו מכשיר עם האפליקציה!
-                sendBroadcast(Intent("DEVICE_FOUND").putExtra("MAC", mac).putExtra("NAME", name))
+                sendBroadcast(Intent("DEVICE_FOUND").putExtra("MAC", mac))
+
+                // אם יש הודעות ממתינות לשליחה אוטומטית - דחוף אותן!
+                if (autoPushQueue.isNotEmpty()) {
+                    pushNextMessageToDevice(result.device)
+                }
             }
         })
     }
 
-    private fun stopActiveScan() {
-        val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-        scanner?.stopScan(object : ScanCallback() {})
-    }
+    private fun pushNextMessageToDevice(device: BluetoothDevice) {
+        if (autoPushQueue.isEmpty()) return
+        val entry = autoPushQueue.entries.first()
+        val msgId = entry.key
+        val payload = entry.value
 
-    private fun forceSendToDevice(mac: String, payload: String, msgId: String) {
-        val device = bluetoothManager?.adapter?.getRemoteDevice(mac)
-        device?.connectGatt(this, false, object : BluetoothGattCallback() {
+        device.connectGatt(this, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) gatt.requestMtu(512)
-                else { gatt.close(); broadcastStatus(msgId, "FAILED") }
+                else gatt.close()
             }
             override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
                 if (status == BluetoothGatt.GATT_SUCCESS) gatt.discoverServices()
@@ -87,43 +92,56 @@ class GossipService : Service() {
                 } else gatt.disconnect()
             }
             override fun onCharacteristicWrite(gatt: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
-                if (status == BluetoothGatt.GATT_SUCCESS) broadcastStatus(msgId, "SENT")
-                else broadcastStatus(msgId, "FAILED")
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    sendBroadcast(Intent("MSG_STATUS").putExtra("ID", msgId).putExtra("STATUS", "SENT"))
+                    autoPushQueue.remove(msgId) // הצליח לשלוח? מסיר מהתור!
+                }
                 gatt.disconnect(); gatt.close()
             }
         })
     }
 
-    private fun broadcastStatus(msgId: String, status: String) {
-        sendBroadcast(Intent("MSG_STATUS").putExtra("ID", msgId).putExtra("STATUS", status))
-    }
-
-    private fun handleIncoming(data: String) {
+    private fun handleIncoming(data: String, senderMac: String) {
         val hash = data.hashCode()
         if (!seenMessages.contains(hash)) {
             seenMessages.add(hash)
+            
+            // מבנה חדש: TYPE|MAC|SENDER|TARGET|MSG
             val parts = data.split("|")
-            if (parts.size >= 4) {
+            if (parts.size >= 5) {
                 sendBroadcast(Intent("NEW_MSG").apply {
-                    putExtra("SENDER", parts[1])
-                    putExtra("TARGET", parts[2])
-                    putExtra("MSG", parts[3])
+                    putExtra("MAC", parts[1])
+                    putExtra("SENDER", parts[2])
+                    putExtra("TARGET", parts[3])
+                    putExtra("MSG", parts[4])
                 })
-                try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
+                
+                val prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
+                if (prefs.getBoolean("sound_enabled", true)) {
+                    try { RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)).play() } catch (e: Exception) {}
+                }
+                
+                // מוסיף לתור כדי להעביר הלאה (Gossip)
+                autoPushQueue[UUID.randomUUID().toString()] = data
             }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            "START_SCAN" -> startActiveScan()
-            "STOP_SCAN" -> stopActiveScan()
-            "FORCE_SEND" -> {
-                val mac = intent.getStringExtra("MAC") ?: return START_STICKY
-                val payload = intent.getStringExtra("PAYLOAD") ?: return START_STICKY
-                val msgId = intent.getStringExtra("MSG_ID") ?: return START_STICKY
-                forceSendToDevice(mac, payload, msgId)
-            }
+        if (intent?.action == "SEND") {
+            val type = intent.getStringExtra("T") ?: "G"
+            val mac = bluetoothManager?.adapter?.address ?: "UNKNOWN"
+            val sender = intent.getStringExtra("S") ?: "KosherUser"
+            val target = intent.getStringExtra("R") ?: "ALL"
+            val msg = intent.getStringExtra("M") ?: ""
+            val msgId = intent.getStringExtra("ID") ?: UUID.randomUUID().toString()
+            
+            val payload = "$type|$mac|$sender|$target|$msg"
+            seenMessages.add(payload.hashCode())
+            
+            // מכניס לתור ההפצה האוטומטי
+            autoPushQueue[msgId] = payload
+            startActiveScan() // מוודא שהסורק פועל
         }
         return START_STICKY
     }
