@@ -15,6 +15,8 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.viewpager.widget.PagerAdapter
+import androidx.viewpager.widget.ViewPager
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import java.util.UUID
 
@@ -31,48 +33,70 @@ class MainActivity : AppCompatActivity() {
     private lateinit var radarAdapter: ArrayAdapter<String>
     private lateinit var prefs: SharedPreferences
     
-    private lateinit var publicScreen: View
-    private lateinit var privateScreen: View
-    private lateinit var outboxScreen: View
-    private lateinit var settingsScreen: View
+    private lateinit var screens: List<View>
+    private lateinit var privateTargetInput: EditText
+    
     private lateinit var myName: String
-    private lateinit var myMac: String // מזהה ייחודי וירטואלי (במקום MAC אמיתי שגורם לקריסה)
+    private lateinit var myMac: String
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
         myName = prefs.getString("u", "User_${(10..99).random()}") ?: "User"
-        
-        // יצירת מזהה בטוח במקום פנייה לחומרת הבלוטוס בשלב מוקדם
-        myMac = prefs.getString("mac_id", null) ?: UUID.randomUUID().toString().substring(0, 8).uppercase().also {
-            prefs.edit().putString("mac_id", it).apply()
-        }
+        myMac = prefs.getString("mac_id", null) ?: UUID.randomUUID().toString().substring(0, 8).uppercase().also { prefs.edit().putString("mac_id", it).apply() }
 
         val main = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
         
-        publicScreen = createChatScreen("G")
-        privateScreen = createChatScreen("P").apply { visibility = View.GONE }
-        outboxScreen = createOutboxScreen().apply { visibility = View.GONE }
-        settingsScreen = createSettingsAndRadar().apply { visibility = View.GONE }
+        // יצירת 4 המסכים
+        val publicScreen = createChatScreen("G")
+        val privateScreen = createChatScreen("P")
+        val outboxScreen = createOutboxScreen()
+        val settingsScreen = createSettingsAndRadar()
+        screens = listOf(publicScreen, privateScreen, outboxScreen, settingsScreen)
 
+        // תפריט תחתון
         val nav = BottomNavigationView(this).apply {
             id = View.generateViewId()
             setBackgroundColor(Color.WHITE)
             menu.add(0, 1, 0, "ציבורי").setIcon(android.R.drawable.ic_menu_sort_by_size)
             menu.add(0, 2, 1, "פרטי").setIcon(android.R.drawable.ic_dialog_email)
-            menu.add(0, 3, 2, "ניהול שליחה").setIcon(android.R.drawable.ic_menu_send)
+            menu.add(0, 3, 2, "שליחה").setIcon(android.R.drawable.ic_menu_send)
             menu.add(0, 4, 3, "הגדרות").setIcon(android.R.drawable.ic_menu_manage)
-            setOnItemSelectedListener {
-                publicScreen.visibility = if (it.itemId == 1) View.VISIBLE else View.GONE
-                privateScreen.visibility = if (it.itemId == 2) View.VISIBLE else View.GONE
-                outboxScreen.visibility = if (it.itemId == 3) View.VISIBLE else View.GONE
-                settingsScreen.visibility = if (it.itemId == 4) View.VISIBLE else View.GONE
-                true
+        }
+
+        // מערכת גלילה (החלקה בין מסכים)
+        val pager = ViewPager(this).apply {
+            id = View.generateViewId()
+            offscreenPageLimit = 4
+            adapter = object : PagerAdapter() {
+                override fun getCount() = screens.size
+                override fun isViewFromObject(v: View, o: Any) = v === o
+                override fun instantiateItem(container: ViewGroup, pos: Int): Any {
+                    container.addView(screens[pos])
+                    return screens[pos]
+                }
+                override fun destroyItem(container: ViewGroup, pos: Int, obj: Any) {
+                    container.removeView(obj as View)
+                }
             }
         }
 
-        val lp = RelativeLayout.LayoutParams(-1, 180).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
-        main.addView(publicScreen); main.addView(privateScreen); main.addView(outboxScreen); main.addView(settingsScreen); main.addView(nav, lp)
+        // סנכרון בין התפריט למסך המוחלק
+        nav.setOnItemSelectedListener { item ->
+            pager.currentItem = item.itemId - 1
+            true
+        }
+        pager.addOnPageChangeListener(object : ViewPager.SimpleOnPageChangeListener() {
+            override fun onPageSelected(position: Int) {
+                nav.menu.getItem(position).isChecked = true
+            }
+        })
+
+        val navLp = RelativeLayout.LayoutParams(-1, 180).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
+        val pagerLp = RelativeLayout.LayoutParams(-1, -1).apply { addRule(RelativeLayout.ABOVE, nav.id) }
+        
+        main.addView(pager, pagerLp)
+        main.addView(nav, navLp)
         setContentView(main)
 
         registerReceivers()
@@ -80,25 +104,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndStart() {
-        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.ACCESS_FINE_LOCATION)
-        } else {
-            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        
+        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.ACCESS_FINE_LOCATION) else arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
         val missing = perms.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
-        } else {
-            startService(Intent(this, GossipService::class.java))
-        }
+        if (missing.isNotEmpty()) ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+        else startService(Intent(this, GossipService::class.java))
     }
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, g: IntArray) {
         super.onRequestPermissionsResult(rc, p, g)
-        if (g.isNotEmpty() && g.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startService(Intent(this, GossipService::class.java))
-        }
+        if (g.isNotEmpty() && g.all { it == PackageManager.PERMISSION_GRANTED }) startService(Intent(this, GossipService::class.java))
     }
 
     private fun getAlias(mac: String, defaultName: String): String = prefs.getString("alias_$mac", defaultName) ?: defaultName
@@ -113,7 +127,6 @@ class MainActivity : AppCompatActivity() {
                 val target = i?.getStringExtra("TARGET") ?: "ALL"
                 val msg = i?.getStringExtra("MSG") ?: ""
                 val type = if (target == "ALL") "G" else "P"
-                
                 val displayName = getAlias(mac, sender)
                 
                 if (target == "ALL" || target == myName || target == displayName) {
@@ -166,7 +179,7 @@ class MainActivity : AppCompatActivity() {
                         setColor(if (msg.isMine) Color.parseColor("#DCF8C6") else Color.WHITE)
                         cornerRadius = 20f
                     }
-                    if (!msg.isMine) addView(TextView(context).apply { text = msg.senderName; setTextColor(Color.parseColor("#075E54")); textSize = 12f })
+                    if (!msg.isMine) addView(TextView(context).apply { text = msg.senderName; setTextColor(Color.parseColor("#075E54")); textSize = 12f; setTypeface(null, android.graphics.Typeface.BOLD) })
                     addView(TextView(context).apply { text = msg.text; setTextColor(Color.BLACK); textSize = 16f; maxWidth = 800 })
                     if (msg.isMine) {
                         val statusTxt = when(msg.status) { "SENT" -> "נשלח"; "PENDING" -> "ממתין..."; "FAILED" -> "נכשל"; else -> "" }
@@ -174,25 +187,34 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 addView(bubble)
-                setOnClickListener { if (msg.isMine) showForceSendDialog(msg) }
+                
+                // לחיצה על הודעה: אם שלי - אלץ שליחה. אם קיבלתי בפרטי - העתק שם לתיבת התשובה!
+                setOnClickListener { 
+                    if (msg.isMine) {
+                        showForceSendDialog(msg) 
+                    } else if (filterType == "P") {
+                        privateTargetInput.setText(msg.senderName)
+                        Toast.makeText(context, "משיב ל-${msg.senderName}", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
         }
     }
 
     private fun showForceSendDialog(msg: ChatMsg) {
         if (discoveredMacs.isEmpty()) {
-            Toast.makeText(this, "אין מכשירים בראדאר. גש להגדרות ובצע חיפוש.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "הראדאר ריק. כנס להגדרות ובצע חיפוש מכשירים.", Toast.LENGTH_SHORT).show()
             return
         }
         val array = discoveredMacs.map { getAlias(it, it) }.toTypedArray()
         val macs = discoveredMacs.toList()
         
-        AlertDialog.Builder(this).setTitle("שדר למכשיר פיזי:").setItems(array) { _, w ->
+        AlertDialog.Builder(this).setTitle("שדר למכשיר:").setItems(array) { _, w ->
             val mac = macs[w]
             val payload = "${msg.type}|$myMac|$myName|${msg.target}|${msg.text}"
             msg.status = "PENDING"; updateLists()
             startService(Intent(this, GossipService::class.java).apply { action = "FORCE_SEND"; putExtra("MAC", mac); putExtra("PAYLOAD", payload); putExtra("MSG_ID", msg.id) })
-            Toast.makeText(this, "מתחבר אל ${array[w]}...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "דוחף ל-${array[w]}...", Toast.LENGTH_SHORT).show()
         }.show()
     }
 
@@ -210,15 +232,16 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; setPadding(20,20,20,20); setBackgroundColor(Color.WHITE)
             gravity = Gravity.CENTER_VERTICAL
             
-            val targetInp: EditText? = if (type == "P") EditText(context).apply { hint = "נמען"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.4f) } else null
-            val msgInp: EditText = EditText(context).apply { 
-                hint = "כתוב..."; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            val targetInp: EditText? = if (type == "P") EditText(context).apply { hint = "נמען"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.4f).apply { setMargins(0,0,15,0) }; setBackgroundResource(android.R.drawable.edit_text) }.also { privateTargetInput = it } else null
+            
+            val msgInp = EditText(context).apply { 
+                hint = "הודעה..."; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
                 background = GradientDrawable().apply { setStroke(1, Color.LTGRAY); cornerRadius = 40f; setColor(Color.parseColor("#F5F5F5")) }
                 setPadding(40, 30, 40, 30)
             }
             
             val btn = Button(context).apply {
-                text = "שלח"; setBackgroundColor(Color.parseColor("#00897B")); setTextColor(Color.WHITE)
+                text = "שלח"; setTextColor(Color.WHITE)
                 background = GradientDrawable().apply { setColor(Color.parseColor("#00897B")); cornerRadius = 40f }
                 layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(15, 0, 0, 0) }
                 
@@ -228,7 +251,7 @@ class MainActivity : AppCompatActivity() {
                     if (m.isNotBlank()) {
                         val msg = ChatMsg(UUID.randomUUID().toString(), myMac, myName, target, m, "PENDING", true, type)
                         allMessages.add(msg); updateLists(); msgInp.text.clear()
-                        showForceSendDialog(msg)
+                        showForceSendDialog(msg) // מקפיץ מייד לאישור שידור!
                     }
                 }
             }
@@ -241,33 +264,73 @@ class MainActivity : AppCompatActivity() {
     private fun createOutboxScreen(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         addView(TextView(context).apply {
-            text = "תיבת יוצאים - לחץ על הודעה כדי לשדר שוב"; gravity = Gravity.CENTER
-            setPadding(0, 30, 0, 30); setBackgroundColor(Color.parseColor("#607D8B")); setTextColor(Color.WHITE)
+            text = "הודעות יוצאות - לחץ על בועה לאילוץ שליחה מחדש"
+            gravity = Gravity.CENTER; setPadding(0, 30, 0, 30)
+            setBackgroundColor(Color.parseColor("#607D8B")); setTextColor(Color.WHITE); textSize = 14f
         })
         addView(ListView(context).apply {
             divider = null; outboxAdapter = MessageAdapter("OUTBOX"); adapter = outboxAdapter; setStackFromBottom(true)
             layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
         })
+        
+        // תיבת שליחה חופשית גם מכאן (משלב ציבורי ופרטי)
+        val globalSendArea = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(30,30,30,30); setBackgroundColor(Color.WHITE)
+            val rg = RadioGroup(context).apply { orientation = RadioGroup.HORIZONTAL }
+            val rbG = RadioButton(context).apply { text = "לכולם"; id = View.generateViewId(); isChecked = true }
+            val rbP = RadioButton(context).apply { text = "אישי"; id = View.generateViewId() }
+            rg.addView(rbG); rg.addView(rbP)
+            
+            val targetE = EditText(context).apply { hint = "שם הנמען"; visibility = View.GONE }
+            rbP.setOnCheckedChangeListener { _, c -> targetE.visibility = if (c) View.VISIBLE else View.GONE }
+            
+            val msgE = EditText(context).apply { hint = "כתוב הודעה..."; background = GradientDrawable().apply { setStroke(1, Color.LTGRAY); cornerRadius = 20f }; setPadding(30,20,30,20) }
+            val btnSend = Button(context).apply {
+                text = "שגר"; setBackgroundColor(Color.parseColor("#00897B")); setTextColor(Color.WHITE)
+                setOnClickListener {
+                    val m = msgE.text.toString()
+                    val t = if (rbG.isChecked) "ALL" else targetE.text.toString()
+                    val type = if (rbG.isChecked) "G" else "P"
+                    if (m.isNotBlank() && t.isNotBlank()) {
+                        val msg = ChatMsg(UUID.randomUUID().toString(), myMac, myName, t, m, "PENDING", true, type)
+                        allMessages.add(msg); updateLists(); msgE.text.clear()
+                        showForceSendDialog(msg)
+                    }
+                }
+            }
+            addView(rg); addView(targetE); addView(msgE); addView(btnSend.apply { layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0,10,0,0) } })
+        }
+        addView(globalSendArea)
     }
 
     private fun createSettingsAndRadar(): ScrollView = ScrollView(this).apply {
         val container = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(50, 50, 50, 50) }
         
-        container.addView(TextView(context).apply { text = "הגדרות - Kosher Tech"; textSize = 18f; setTextColor(Color.parseColor("#075E54")) })
-        val nameInp = EditText(context).apply { setText(myName) }
+        container.addView(TextView(context).apply { text = "הגדרות"; textSize = 18f; setTextColor(Color.parseColor("#075E54")) })
+        
+        val nameInp = EditText(context).apply { setText(myName); hint = "השם שלי ברשת" }
         container.addView(nameInp)
         container.addView(Button(context).apply {
-            text = "שמור שם ציבורי"; setBackgroundColor(Color.LTGRAY)
+            text = "שמור שם"; setBackgroundColor(Color.LTGRAY)
             setOnClickListener { myName = nameInp.text.toString(); prefs.edit().putString("u", myName).apply(); Toast.makeText(context, "שם עודכן", Toast.LENGTH_SHORT).show() }
         })
 
-        container.addView(TextView(context).apply { text = "ראדאר וניהול אנשי קשר"; textSize = 18f; setTextColor(Color.parseColor("#075E54")); setPadding(0,60,0,20) })
+        val soundCheck = CheckBox(context).apply { 
+            text = "הפעל התראות קוליות"
+            isChecked = prefs.getBoolean("sound_enabled", true)
+            setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("sound_enabled", isChecked).apply() }
+        }
+        container.addView(soundCheck.apply { setPadding(0,30,0,0) })
+
+        container.addView(TextView(context).apply { text = "ראדאר וחיבורים"; textSize = 18f; setTextColor(Color.parseColor("#075E54")); setPadding(0,60,0,10) })
+        container.addView(TextView(context).apply { text = "לחץ על מכשיר ברשימה כדי לתת לו שם מותאם."; textSize = 12f; setTextColor(Color.GRAY); setPadding(0,0,0,20) })
+        
         container.addView(Button(context).apply {
-            text = "הפעל סריקה למכשירים"; setBackgroundColor(Color.parseColor("#00897B")); setTextColor(Color.WHITE)
+            text = "הפעל סריקת מכשירים"; setBackgroundColor(Color.parseColor("#00897B")); setTextColor(Color.WHITE)
             setOnClickListener { 
                 discoveredMacs.clear(); radarAdapter.clear(); radarAdapter.notifyDataSetChanged()
                 startService(Intent(context, GossipService::class.java).apply { action = "START_SCAN" })
-                Toast.makeText(context, "סורק... הרשימה תתעדכן למטה", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "סורק... הרשימה תתעדכן", Toast.LENGTH_SHORT).show()
                 postDelayed({ startService(Intent(context, GossipService::class.java).apply { action = "STOP_SCAN" }) }, 15000)
             }
         })
@@ -279,10 +342,10 @@ class MainActivity : AppCompatActivity() {
             setOnItemClickListener { _, _, p, _ ->
                 val mac = discoveredMacs.elementAt(p)
                 val input = EditText(context).apply { hint = "הכנס כינוי..."; setText(getAlias(mac, "")) }
-                AlertDialog.Builder(context).setTitle("ערוך איש קשר").setView(input).setPositiveButton("שמור") { _, _ -> 
+                AlertDialog.Builder(context).setTitle("שמור שם איש קשר").setView(input).setPositiveButton("שמור") { _, _ -> 
                     prefs.edit().putString("alias_$mac", input.text.toString()).apply()
                     radarAdapter.clear(); radarAdapter.addAll(discoveredMacs.map { m -> "מכשיר זמין: ${getAlias(m, m)}" })
-                    updateLists(); Toast.makeText(context, "עודכן!", Toast.LENGTH_SHORT).show()
+                    updateLists(); Toast.makeText(context, "נשמר!", Toast.LENGTH_SHORT).show()
                 }.show()
             }
         }
