@@ -6,6 +6,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -13,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import java.util.UUID
 
@@ -34,13 +36,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var outboxScreen: View
     private lateinit var settingsScreen: View
     private lateinit var myName: String
-    private lateinit var myMac: String
+    private lateinit var myMac: String // מזהה ייחודי וירטואלי (במקום MAC אמיתי שגורם לקריסה)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("K", Context.MODE_PRIVATE)
         myName = prefs.getString("u", "User_${(10..99).random()}") ?: "User"
-        myMac = android.bluetooth.BluetoothAdapter.getDefaultAdapter()?.address ?: "UNKNOWN"
+        
+        // יצירת מזהה בטוח במקום פנייה לחומרת הבלוטוס בשלב מוקדם
+        myMac = prefs.getString("mac_id", null) ?: UUID.randomUUID().toString().substring(0, 8).uppercase().also {
+            prefs.edit().putString("mac_id", it).apply()
+        }
 
         val main = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
         
@@ -70,18 +76,37 @@ class MainActivity : AppCompatActivity() {
         setContentView(main)
 
         registerReceivers()
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.ACCESS_FINE_LOCATION), 1)
+        checkPermissionsAndStart()
+    }
+
+    private fun checkPermissionsAndStart() {
+        val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        
+        val missing = perms.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+        } else {
+            startService(Intent(this, GossipService::class.java))
+        }
     }
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, g: IntArray) {
         super.onRequestPermissionsResult(rc, p, g)
-        if (g.isNotEmpty() && g[0] == PackageManager.PERMISSION_GRANTED) startService(Intent(this, GossipService::class.java))
+        if (g.isNotEmpty() && g.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startService(Intent(this, GossipService::class.java))
+        }
     }
 
     private fun getAlias(mac: String, defaultName: String): String = prefs.getString("alias_$mac", defaultName) ?: defaultName
 
     private fun registerReceivers() {
-        registerReceiver(object : BroadcastReceiver() {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) ContextCompat.RECEIVER_NOT_EXPORTED else 0
+
+        ContextCompat.registerReceiver(this, object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val mac = i?.getStringExtra("MAC") ?: ""
                 val sender = i?.getStringExtra("SENDER") ?: ""
@@ -96,18 +121,17 @@ class MainActivity : AppCompatActivity() {
                     updateLists()
                 }
             }
-        }, IntentFilter("NEW_MSG"))
+        }, IntentFilter("NEW_MSG"), flags)
 
-        registerReceiver(object : BroadcastReceiver() {
+        ContextCompat.registerReceiver(this, object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val id = i?.getStringExtra("ID"); val status = i?.getStringExtra("STATUS") ?: ""
                 allMessages.find { it.id == id }?.status = status
                 updateLists()
-                if (status == "SENT") Toast.makeText(this@MainActivity, "נשלח בהצלחה!", Toast.LENGTH_SHORT).show()
             }
-        }, IntentFilter("MSG_STATUS"))
+        }, IntentFilter("MSG_STATUS"), flags)
 
-        registerReceiver(object : BroadcastReceiver() {
+        ContextCompat.registerReceiver(this, object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val mac = i?.getStringExtra("MAC") ?: return
                 if (!discoveredMacs.contains(mac)) {
@@ -116,7 +140,7 @@ class MainActivity : AppCompatActivity() {
                     radarAdapter.notifyDataSetChanged()
                 }
             }
-        }, IntentFilter("DEVICE_FOUND"))
+        }, IntentFilter("DEVICE_FOUND"), flags)
     }
 
     private fun updateLists() {
@@ -150,7 +174,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 addView(bubble)
-                
                 setOnClickListener { if (msg.isMine) showForceSendDialog(msg) }
             }
         }
@@ -187,7 +210,6 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; setPadding(20,20,20,20); setBackgroundColor(Color.WHITE)
             gravity = Gravity.CENTER_VERTICAL
             
-            // הוספת Type מפורש (EditText?) כדי לפתור את שגיאת הקומפילציה
             val targetInp: EditText? = if (type == "P") EditText(context).apply { hint = "נמען"; layoutParams = LinearLayout.LayoutParams(0, -2, 0.4f) } else null
             val msgInp: EditText = EditText(context).apply { 
                 hint = "כתוב..."; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
