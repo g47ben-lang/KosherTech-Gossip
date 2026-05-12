@@ -1,12 +1,11 @@
 package com.koshertech.gossip
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter // התיקון הקריטי כאן!
+import android.bluetooth.BluetoothAdapter
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -153,46 +152,33 @@ class MainActivity : AppCompatActivity() {
         }
         
         val diagBtn = Button(context).apply {
-            text = "פותר תקלות (Diagnostics)"
-            setBackgroundColor(Color.RED)
+            text = "בדיקת מצב בלוטוס"
+            setBackgroundColor(Color.BLUE)
             setTextColor(Color.WHITE)
-            setOnClickListener { runDiagnostics() }
-        }
-
-        val refreshBtn = Button(context).apply {
-            text = "רענון בלוטוס ידני"
             setOnClickListener { 
-                stopService(Intent(context, GossipService::class.java))
-                startService(Intent(context, GossipService::class.java))
-                Toast.makeText(context, "הרשת אותחלה מחדש", Toast.LENGTH_SHORT).show()
+                val btEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled ?: false
+                Toast.makeText(context, if(btEnabled) "בלוטוס פעיל ותקין" else "נא להפעיל בלוטוס!", Toast.LENGTH_LONG).show()
             }
         }
 
-        addView(TextView(context).apply { text = "הגדרות וכלים"; textSize = 20f; setPadding(0,0,0,40) })
-        addView(nameInput); addView(saveBtn); addView(refreshBtn); addView(diagBtn)
-    }
+        val refreshBtn = Button(context).apply {
+            text = "אתחול רשת Gossip"
+            setOnClickListener { 
+                stopService(Intent(context, GossipService::class.java))
+                startService(Intent(context, GossipService::class.java))
+                Toast.makeText(context, "הרשת אותחלה", Toast.LENGTH_SHORT).show()
+            }
+        }
 
-    private fun runDiagnostics() {
-        val bluetoothEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled ?: false
-        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val gpsEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) lm.isLocationEnabled else lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
-        
-        val report = """
-            Bluetooth: ${if (bluetoothEnabled) "V" else "X - כבה והדלק בלוטוס"}
-            Location (GPS): ${if (gpsEnabled) "V" else "X - חובה להדליק מיקום!"}
-            Service: Running
-            
-            שים לב: ללא 'מיקום' דולק, אנדרואיד לא ימצא מכשירים אחרים.
-        """.trimIndent()
-        
-        android.app.AlertDialog.Builder(this).setTitle("דו\"ח מצב").setMessage(report).show()
+        addView(TextView(context).apply { text = "ניהול רשת (ללא GPS)"; textSize = 20f; setPadding(0,0,0,40) })
+        addView(nameInput); addView(saveBtn); addView(refreshBtn); addView(diagBtn)
     }
 
     private fun checkPermissions() {
         val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION)
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
+            arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN)
         }
         if (perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
             ActivityCompat.requestPermissions(this, perms, 1)
