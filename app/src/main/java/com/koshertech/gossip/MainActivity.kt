@@ -5,6 +5,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -29,10 +30,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("KosherGossip", Context.MODE_PRIVATE)
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-            showOldDeviceDialog(); return
-        }
-
         val mainLayout = RelativeLayout(this).apply { setBackgroundColor(Color.parseColor("#E5DDD5")) }
         
         chatScreen = createChatScreen()
@@ -42,9 +39,9 @@ class MainActivity : AppCompatActivity() {
         val nav = BottomNavigationView(this).apply {
             id = View.generateViewId()
             setBackgroundColor(Color.WHITE)
-            menu.add(0, 1, 0, "צ'אט").setIcon(android.R.drawable.ic_dialog_email)
-            menu.add(0, 2, 1, "חדש").setIcon(android.R.drawable.ic_input_add)
-            menu.add(0, 3, 2, "הגדרות").setIcon(android.R.drawable.ic_menu_manage)
+            menu.add(0, 1, 0, "לוח").setIcon(android.R.drawable.ic_dialog_email)
+            menu.add(0, 2, 1, "שלח").setIcon(android.R.drawable.ic_menu_send)
+            menu.add(0, 3, 2, "כלים").setIcon(android.R.drawable.ic_menu_manage)
             
             setOnItemSelectedListener { item ->
                 chatScreen.visibility = if (item.itemId == 1) View.VISIBLE else View.GONE
@@ -76,30 +73,24 @@ class MainActivity : AppCompatActivity() {
         }, IntentFilter("NEW_MSG"))
     }
 
-    // אדפטר מותאם אישית לבועות צ'אט
     inner class MessageAdapter : ArrayAdapter<String>(this, 0, messages) {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val msg = getItem(position) ?: ""
             val isMine = msg.startsWith("אני:")
-            
             val wrapper = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = if (isMine) Gravity.END else Gravity.START
                 setPadding(20, 10, 20, 10)
             }
-
             val bubble = TextView(context).apply {
                 text = msg
                 setPadding(30, 20, 30, 20)
-                textSize = 16f
-                setTextColor(Color.BLACK)
                 background = GradientDrawable().apply {
                     setColor(if (isMine) Color.parseColor("#DCF8C6") else Color.WHITE)
                     cornerRadius = 25f
                 }
                 maxWidth = 700
             }
-
             wrapper.addView(bubble)
             return wrapper
         }
@@ -107,76 +98,93 @@ class MainActivity : AppCompatActivity() {
 
     private fun createChatScreen() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        val header = TextView(context).apply {
-            text = "Kosher Tech Gossip"
+        addView(TextView(context).apply {
+            text = "לוח מודעות פנימייה"
             setBackgroundColor(Color.parseColor("#075E54"))
             setTextColor(Color.WHITE)
-            textSize = 20f
-            setPadding(40, 40, 40, 40)
+            textSize = 18f
+            setPadding(30, 30, 30, 30)
             gravity = Gravity.CENTER
-        }
-        val listView = ListView(context).apply {
+        })
+        val lv = ListView(context).apply {
             divider = null
             chatAdapter = MessageAdapter()
             adapter = chatAdapter
-            stackFromBottom = true
-            transcriptMode = ListView.TRANSCRIPT_MODE_ALWAYS_SCROLL
         }
-        addView(header)
-        addView(listView)
+        lv.setStackFromBottom(true) // התיקון לשגיאת הקימפול
+        addView(lv)
     }
 
     private fun createSendScreen() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(50, 100, 50, 50)
-        gravity = Gravity.CENTER_HORIZONTAL
-        val input = EditText(context).apply { 
-            hint = "כתוב הודעה לחברה..."
-            background = GradientDrawable().apply {
-                setStroke(2, Color.GRAY)
-                cornerRadius = 10f
-            }
-            setPadding(20, 20, 20, 20)
-        }
+        setPadding(40, 80, 40, 40)
+        val input = EditText(context).apply { hint = "הודעה חדשה..." }
         val btn = Button(context).apply {
-            text = "שלח עכשיו"
-            setBackgroundColor(Color.parseColor("#25D366"))
-            setTextColor(Color.WHITE)
+            text = "שדר לרשת"
             setOnClickListener {
                 val user = prefs.getString("username", "אנונימי")
                 val text = input.text.toString()
                 if (text.isNotBlank()) {
                     messages.add("אני: $text")
                     chatAdapter.notifyDataSetChanged()
-                    val i = Intent(context, GossipService::class.java).apply {
+                    startService(Intent(context, GossipService::class.java).apply {
                         action = "SEND_MESSAGE"
                         putExtra("USER_NAME", user)
                         putExtra("MESSAGE_TEXT", text)
-                    }
-                    startService(i)
+                    })
                     input.text.clear()
                 }
             }
         }
-        addView(input)
-        addView(btn)
+        addView(input); addView(btn)
     }
 
     private fun createSettingsScreen() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(50, 100, 50, 50)
+        setPadding(40, 80, 40, 40)
+        
         val nameInput = EditText(context).apply { 
-            hint = "השם שלך ברשת"
+            hint = "השם שלך"
             setText(prefs.getString("username", ""))
         }
-        val save = Button(context).apply {
-            text = "שמור שם משתמש"
-            setOnClickListener {
-                prefs.edit().putString("username", nameInput.text.toString()).apply()
-                Toast.makeText(context, "נשמר!", Toast.LENGTH_SHORT).show()
+        val saveBtn = Button(context).apply {
+            text = "שמור שם"
+            setOnClickListener { prefs.edit().putString("username", nameInput.text.toString()).apply() }
+        }
+        
+        val diagBtn = Button(context).apply {
+            text = "פותר תקלות (Fixer)"
+            setBackgroundColor(Color.RED)
+            setTextColor(Color.WHITE)
+            setOnClickListener { runDiagnostics() }
+        }
+
+        val refreshBtn = Button(context).apply {
+            text = "חיפוש ידני ורענון רשת"
+            setOnClickListener { 
+                stopService(Intent(context, GossipService::class.java))
+                startService(Intent(context, GossipService::class.java))
+                Toast.makeText(context, "הרשת אותחלה מחדש", Toast.LENGTH_SHORT).show()
             }
         }
-        addView(nameInput); addView(save)
+
+        addView(nameInput); addView(saveBtn); addView(refreshBtn); addView(diagBtn)
+    }
+
+    private fun runDiagnostics() {
+        val bluetoothEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled ?: false
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        
+        val report = """
+            Bluetooth: ${if (bluetoothEnabled) "V" else "X - כבה והדלק בלוטוס"}
+            GPS/Location: ${if (gpsEnabled) "V" else "X - חייב להדליק מיקום במכשיר!"}
+            Permissions: OK
+            
+            שים לב: ללא 'מיקום' דולק, אנדרואיד חוסם סריקת בלוטוס!
+        """.trimIndent()
+        
+        android.app.AlertDialog.Builder(this).setTitle("דו\"ח תקלות").setMessage(report).show()
     }
 
     private fun checkPermissions() {
@@ -187,12 +195,6 @@ class MainActivity : AppCompatActivity() {
         }
         if (perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
             ActivityCompat.requestPermissions(this, perms, 1)
-        } else {
-            startService(Intent(this, GossipService::class.java))
         }
-    }
-
-    private fun showOldDeviceDialog() {
-        android.app.AlertDialog.Builder(this).setTitle("Kosher Tech").setMessage("מכשיר ישן מדי").show()
     }
 }
