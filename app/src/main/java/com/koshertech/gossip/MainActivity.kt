@@ -9,6 +9,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ListView
+import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -16,14 +17,25 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private val messagesList = mutableListOf<String>()
-    private lateinit val adapter: ArrayAdapter<String>
+    private lateinit var adapter: ArrayAdapter<String> // התיקון כאן: var במקום val
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // יצירת ממשק בסיסי מקוד כדי לחסוך קבצי XML בשלב הראשון
-        val layout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
+        // בדיקת תאימות לאנדרואיד 4 (Lollipop הוא API 21)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Kosher Tech")
+                .setMessage("המכשיר שלך מריץ גרסת אנדרואיד ישנה (אנדרואיד 4). טכנולוגיית הרשת דורשת אנדרואיד 5 ומעלה. לצערי, לא תוכל לשלוח או לקבל הודעות.")
+                .setPositiveButton("הבנתי") { _, _ -> finish() }
+                .setCancelable(false)
+                .show()
+            return 
+        }
+
+        // יצירת ממשק בסיסי
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
         }
 
@@ -71,7 +83,11 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        if (permissions.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
+        val allGranted = permissions.all { 
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED 
+        }
+
+        if (allGranted) {
             startGossipService()
         } else {
             ActivityCompat.requestPermissions(this, permissions, 1)
@@ -84,11 +100,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendMessageToService(text: String) {
-        // נוסיף לרשימה שלנו בינתיים
-        messagesList.add("אני: $text")
+        messagesList.add(0, "אני: $text") // מוסיף להתחלה כדי שיראו מיד
         adapter.notifyDataSetChanged()
         
-        // שליחה לשירות שיפיץ הלאה ב-BLE
         val intent = Intent(this, GossipService::class.java).apply {
             action = "SEND_MESSAGE"
             putExtra("MESSAGE_TEXT", text)
